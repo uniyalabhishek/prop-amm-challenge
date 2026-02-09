@@ -1,0 +1,16 @@
+[package]
+name = "prop-amm"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "prop-amm"
+path = "src/main.rs"
+
+[dependencies]
+prop-amm-shared = { workspace = true }
+prop-amm-executor = { workspace = true }
+prop-amm-sim = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+libloading = "0.8"
