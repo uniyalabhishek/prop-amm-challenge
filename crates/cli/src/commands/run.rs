@@ -1,28 +1,25 @@
-use prop_amm_executor::{AfterSwapFn, SwapFn};
-use prop_amm_shared::normalizer::{after_swap as normalizer_after_swap_fn, compute_swap as normalizer_swap};
+use std::path::{Path, PathBuf};
+
+use prop_amm_executor::BpfProgram;
+use prop_amm_shared::normalizer::{
+    after_swap as normalizer_after_swap_fn, compute_swap as normalizer_swap,
+};
 use prop_amm_sim::runner;
 
 use crate::output;
 
-pub fn run(
-    lib_path: &str,
-    simulations: u32,
-    steps: u32,
-    workers: usize,
-) -> anyhow::Result<()> {
-    let swap_fn = load_native_swap(lib_path)?;
-    let after_swap_fn = load_native_after_swap(lib_path);
+pub fn run(program_path: &str, simulations: u32, steps: u32, workers: usize) -> anyhow::Result<()> {
+    let submission_program = load_submission_bpf(program_path)?;
     let n_workers = if workers == 0 { None } else { Some(workers) };
 
     println!(
-        "Running {} simulations ({} steps each)...",
+        "Running {} simulations ({} steps each) with BPF submission runtime...",
         simulations, steps,
     );
 
     let start = std::time::Instant::now();
-    let result = runner::run_default_batch_native(
-        swap_fn,
-        after_swap_fn,
+    let result = runner::run_default_batch_mixed(
+        submission_program,
         normalizer_swap,
         Some(normalizer_after_swap_fn),
         simulations,
@@ -35,51 +32,76 @@ pub fn run(
     Ok(())
 }
 
-fn load_native_swap(path: &str) -> anyhow::Result<SwapFn> {
-    unsafe {
-        let lib = libloading::Library::new(path)
-            .map_err(|e| anyhow::anyhow!("Failed to load native library {}: {}", path, e))?;
-        let func: libloading::Symbol<unsafe extern "C" fn(*const u8, usize) -> u64> =
-            lib.get(b"compute_swap_ffi")
-                .map_err(|_| anyhow::anyhow!(
-                    "Symbol 'compute_swap_ffi' not found in {}. \
-                     Make sure your program exports it — see README.",
-                    path
-                ))?;
-        let raw_ptr = *func as usize;
-        std::mem::forget(lib);
-        SWAP_FN_PTR.store(raw_ptr, std::sync::atomic::Ordering::SeqCst);
-        Ok(native_swap_wrapper)
+fn load_submission_bpf(path: &str) -> anyhow::Result<BpfProgram> {
+    let provided = Path::new(path);
+    if provided.exists() {
+        let bytes = std::fs::read(provided)
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", provided.display(), e))?;
+        if let Ok(program) = BpfProgram::load(&bytes) {
+            return Ok(program);
+        }
+    }
+
+    let bpf_path = find_companion_bpf(provided).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Path {} is not a loadable BPF program and no companion BPF artifact was found. \
+             Pass the BPF .so path or build with `prop-amm build <crate-dir>` and pass the native library path.",
+            path
+        )
+    })?;
+
+    let bytes = std::fs::read(&bpf_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read BPF program {}: {}", bpf_path.display(), e))?;
+    BpfProgram::load(&bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to load BPF program {}: {}", bpf_path.display(), e))
+}
+
+fn find_companion_bpf(native_lib: &Path) -> Option<PathBuf> {
+    let release_dir = native_lib.parent()?;
+    if release_dir.file_name()?.to_str()? != "release" {
+        return None;
+    }
+    let target_dir = release_dir.parent()?;
+    if target_dir.file_name()?.to_str()? != "target" {
+        return None;
+    }
+    let crate_dir = target_dir.parent()?;
+    let cargo_toml = crate_dir.join("Cargo.toml");
+    let pkg_name = read_package_name(&cargo_toml)?;
+    let so_name = format!("{}.so", pkg_name.replace('-', "_"));
+    let bpf_path = crate_dir.join("target").join("deploy").join(so_name);
+    if bpf_path.exists() {
+        Some(bpf_path)
+    } else {
+        None
     }
 }
 
-fn load_native_after_swap(path: &str) -> Option<AfterSwapFn> {
-    unsafe {
-        let lib = libloading::Library::new(path).ok()?;
-        let func: libloading::Symbol<unsafe extern "C" fn(*const u8, usize, *mut u8, usize)> =
-            lib.get(b"after_swap_ffi").ok()?;
-        let raw_ptr = *func as usize;
-        std::mem::forget(lib);
-        AFTER_SWAP_FN_PTR.store(raw_ptr, std::sync::atomic::Ordering::SeqCst);
-        Some(native_after_swap_wrapper)
+fn read_package_name(cargo_toml: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(cargo_toml).ok()?;
+    let mut in_package = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("name") {
+            let rest = rest.trim_start();
+            if !rest.starts_with('=') {
+                continue;
+            }
+            let mut value = rest[1..].trim();
+            if let Some(comment_idx) = value.find('#') {
+                value = value[..comment_idx].trim();
+            }
+            if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
+                return Some(value[1..value.len() - 1].to_string());
+            }
+        }
     }
-}
-
-static SWAP_FN_PTR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static AFTER_SWAP_FN_PTR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-fn native_swap_wrapper(data: &[u8]) -> u64 {
-    let ptr = SWAP_FN_PTR.load(std::sync::atomic::Ordering::SeqCst);
-    unsafe {
-        let func: unsafe extern "C" fn(*const u8, usize) -> u64 = std::mem::transmute(ptr);
-        func(data.as_ptr(), data.len())
-    }
-}
-
-fn native_after_swap_wrapper(data: &[u8], storage: &mut [u8]) {
-    let ptr = AFTER_SWAP_FN_PTR.load(std::sync::atomic::Ordering::SeqCst);
-    unsafe {
-        let func: unsafe extern "C" fn(*const u8, usize, *mut u8, usize) = std::mem::transmute(ptr);
-        func(data.as_ptr(), data.len(), storage.as_mut_ptr(), storage.len())
-    }
+    None
 }

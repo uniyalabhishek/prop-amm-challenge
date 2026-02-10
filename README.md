@@ -23,7 +23,7 @@ edit programs/my-strategy/src/lib.rs
 prop-amm build programs/my-strategy
 
 # Run 1000 simulations locally (~5s on Apple M3 Pro)
-prop-amm run programs/my-strategy/target/release/libmy_strategy.dylib
+prop-amm run programs/my-strategy/target/deploy/my_strategy.so
 ```
 
 ## How the Simulation Works
@@ -186,15 +186,15 @@ The CLI lets you iterate quickly on your strategy before submitting:
 prop-amm build programs/my-strategy
 
 # Run simulations (default: 1000 sims, 10k steps each)
-prop-amm run <path-to-native-lib>
+prop-amm run <path-to-bpf-so>
 
 # Fewer sims for quick iteration
-prop-amm run <path-to-native-lib> --simulations 10
+prop-amm run <path-to-bpf-so> --simulations 10
 ```
 
 The 30 bps normalizer typically scores around 250-350 edge per simulation.
 
-Local simulations run natively via `dlopen` — your Rust code executes directly with no BPF interpreter overhead. The engine parallelizes across simulations using up to 8 worker threads.
+To enforce stateless quote behavior, local simulations execute the submission strategy through the BPF runtime. The normalizer still runs natively for speed, and the engine parallelizes across simulations using up to 8 worker threads.
 
 | Workload                  | Time           | Platform         |
 |---------------------------|----------------|------------------|

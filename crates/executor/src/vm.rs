@@ -42,6 +42,8 @@ impl BpfExecutor {
 
         // Zero the stack for each call
         self.stack.as_slice_mut().fill(0);
+        // Zero heap to prevent hidden cross-call state in unsafe BPF code.
+        self.heap.as_slice_mut().fill(0);
 
         let executable = self.program.executable();
         let loader = self.program.loader();
@@ -86,6 +88,8 @@ impl BpfExecutor {
         ry: u64,
         storage: &[u8],
     ) -> Result<u64, ExecutorError> {
+        self.input_buf.fill(0);
+
         // Write instruction data: [side(1)][amount(8)][rx(8)][ry(8)][storage(1024)]
         self.input_buf[16] = side;
         self.input_buf[17..25].copy_from_slice(&amount.to_le_bytes());
@@ -115,6 +119,8 @@ impl BpfExecutor {
         ry: u64,
         storage: &mut [u8],
     ) -> Result<(), ExecutorError> {
+        self.input_buf.fill(0);
+
         // Write after_swap instruction data:
         // [tag=2(1)][side(1)][input(8)][output(8)][rx(8)][ry(8)][storage(1024)]
         self.input_buf[16] = 2; // tag
