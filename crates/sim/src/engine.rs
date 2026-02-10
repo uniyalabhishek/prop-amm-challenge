@@ -27,7 +27,12 @@ fn run_sim_inner(
         config.retail_buy_prob,
         config.seed.wrapping_add(1),
     );
-    let arb = Arbitrageur::new(config.min_arb_profit);
+    let mut arb = Arbitrageur::new(
+        config.min_arb_profit,
+        config.retail_mean_size,
+        config.retail_size_sigma,
+        config.seed.wrapping_add(2),
+    );
     let router = OrderRouter::new();
 
     let mut submission_edge = 0.0_f64;
@@ -68,8 +73,18 @@ pub fn run_simulation(
     normalizer_program: BpfProgram,
     config: &SimulationConfig,
 ) -> anyhow::Result<SimResult> {
-    let amm_sub = BpfAmm::new(submission_program, config.initial_x, config.initial_y, "submission".to_string());
-    let amm_norm = BpfAmm::new(normalizer_program, config.initial_x, config.initial_y, "normalizer".to_string());
+    let amm_sub = BpfAmm::new(
+        submission_program,
+        config.initial_x,
+        config.initial_y,
+        "submission".to_string(),
+    );
+    let amm_norm = BpfAmm::new(
+        normalizer_program,
+        config.initial_x,
+        config.initial_y,
+        "normalizer".to_string(),
+    );
     run_sim_inner(amm_sub, amm_norm, config)
 }
 
@@ -81,8 +96,20 @@ pub fn run_simulation_native(
     normalizer_after_swap: Option<AfterSwapFn>,
     config: &SimulationConfig,
 ) -> anyhow::Result<SimResult> {
-    let amm_sub = BpfAmm::new_native(submission_fn, submission_after_swap, config.initial_x, config.initial_y, "submission".to_string());
-    let amm_norm = BpfAmm::new_native(normalizer_fn, normalizer_after_swap, config.initial_x, config.initial_y, "normalizer".to_string());
+    let amm_sub = BpfAmm::new_native(
+        submission_fn,
+        submission_after_swap,
+        config.initial_x,
+        config.initial_y,
+        "submission".to_string(),
+    );
+    let amm_norm = BpfAmm::new_native(
+        normalizer_fn,
+        normalizer_after_swap,
+        config.initial_x,
+        config.initial_y,
+        "normalizer".to_string(),
+    );
     run_sim_inner(amm_sub, amm_norm, config)
 }
 
@@ -93,7 +120,18 @@ pub fn run_simulation_mixed(
     normalizer_after_swap: Option<AfterSwapFn>,
     config: &SimulationConfig,
 ) -> anyhow::Result<SimResult> {
-    let amm_sub = BpfAmm::new(submission_program, config.initial_x, config.initial_y, "submission".to_string());
-    let amm_norm = BpfAmm::new_native(normalizer_fn, normalizer_after_swap, config.initial_x, config.initial_y, "normalizer".to_string());
+    let amm_sub = BpfAmm::new(
+        submission_program,
+        config.initial_x,
+        config.initial_y,
+        "submission".to_string(),
+    );
+    let amm_norm = BpfAmm::new_native(
+        normalizer_fn,
+        normalizer_after_swap,
+        config.initial_x,
+        config.initial_y,
+        "normalizer".to_string(),
+    );
     run_sim_inner(amm_sub, amm_norm, config)
 }

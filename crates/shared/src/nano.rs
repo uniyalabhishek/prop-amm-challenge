@@ -3,7 +3,18 @@ pub const NANO_SCALE_F64: f64 = 1_000_000_000.0;
 
 #[inline]
 pub fn f64_to_nano(value: f64) -> u64 {
-    (value * NANO_SCALE_F64) as u64
+    if value.is_nan() || value <= 0.0 {
+        return 0;
+    }
+    if value.is_infinite() {
+        return u64::MAX;
+    }
+    let scaled = value * NANO_SCALE_F64;
+    if scaled >= u64::MAX as f64 {
+        u64::MAX
+    } else {
+        scaled as u64
+    }
 }
 
 #[inline]
@@ -28,5 +39,12 @@ mod tests {
         assert_eq!(f64_to_nano(1.0), NANO_SCALE);
         assert_eq!(f64_to_nano(100.0), 100 * NANO_SCALE);
         assert_eq!(nano_to_f64(NANO_SCALE), 1.0);
+    }
+
+    #[test]
+    fn test_invalid_values_clamp_to_zero() {
+        assert_eq!(f64_to_nano(-1.0), 0);
+        assert_eq!(f64_to_nano(f64::NAN), 0);
+        assert_eq!(f64_to_nano(f64::INFINITY), u64::MAX);
     }
 }

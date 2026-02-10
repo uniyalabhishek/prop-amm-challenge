@@ -22,9 +22,9 @@ enum Commands {
         /// Path to the compiled BPF .so file
         so_path: String,
     },
-    /// Run simulation batch (native execution)
+    /// Run simulation batch (BPF submission runtime)
     Run {
-        /// Path to native shared library (.dylib on macOS, .so on Linux)
+        /// Path to submission program artifact (BPF .so preferred; native lib accepted to locate companion BPF)
         lib_path: String,
         /// Number of simulations
         #[arg(long, default_value = "1000")]

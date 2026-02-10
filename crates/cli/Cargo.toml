@@ -13,4 +13,3 @@ prop-amm-executor = { workspace = true }
 prop-amm-sim = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
-libloading = "0.8"
