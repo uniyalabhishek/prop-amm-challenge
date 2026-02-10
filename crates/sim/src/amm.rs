@@ -142,11 +142,6 @@ impl BpfAmm {
     #[inline]
     pub fn execute_buy_x(&mut self, input_y: f64) -> f64 {
         let output_x = self.quote_buy_x(input_y);
-        self.execute_buy_x_quoted(input_y, output_x)
-    }
-
-    #[inline]
-    pub fn execute_buy_x_quoted(&mut self, input_y: f64, output_x: f64) -> f64 {
         if input_y <= 0.0 || output_x <= 0.0 || !input_y.is_finite() || !output_x.is_finite() {
             return 0.0;
         }
@@ -176,11 +171,6 @@ impl BpfAmm {
     #[inline]
     pub fn execute_sell_x(&mut self, input_x: f64) -> f64 {
         let output_y = self.quote_sell_x(input_x);
-        self.execute_sell_x_quoted(input_x, output_y)
-    }
-
-    #[inline]
-    pub fn execute_sell_x_quoted(&mut self, input_x: f64, output_y: f64) -> f64 {
         if input_x <= 0.0 || output_y <= 0.0 || !input_x.is_finite() || !output_y.is_finite() {
             return 0.0;
         }

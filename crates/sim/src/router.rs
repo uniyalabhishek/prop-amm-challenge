@@ -107,7 +107,7 @@ impl OrderRouter {
         let y_norm = best.in_norm;
 
         if y_sub > MIN_TRADE_SIZE && sub_valid {
-            let x_out = amm_sub.execute_buy_x_quoted(y_sub, best.out_sub);
+            let x_out = amm_sub.execute_buy_x(y_sub);
             if x_out > 0.0 {
                 trades.push(RoutedTrade {
                     is_submission: true,
@@ -118,7 +118,7 @@ impl OrderRouter {
             }
         }
         if y_norm > MIN_TRADE_SIZE && norm_valid {
-            let x_out = amm_norm.execute_buy_x_quoted(y_norm, best.out_norm);
+            let x_out = amm_norm.execute_buy_x(y_norm);
             if x_out > 0.0 {
                 trades.push(RoutedTrade {
                     is_submission: false,
@@ -195,7 +195,7 @@ impl OrderRouter {
         let x_norm = best.in_norm;
 
         if x_sub > MIN_TRADE_SIZE && sub_valid {
-            let y_out = amm_sub.execute_sell_x_quoted(x_sub, best.out_sub);
+            let y_out = amm_sub.execute_sell_x(x_sub);
             if y_out > 0.0 {
                 trades.push(RoutedTrade {
                     is_submission: true,
@@ -206,7 +206,7 @@ impl OrderRouter {
             }
         }
         if x_norm > MIN_TRADE_SIZE && norm_valid {
-            let y_out = amm_norm.execute_sell_x_quoted(x_norm, best.out_norm);
+            let y_out = amm_norm.execute_sell_x(x_norm);
             if y_out > 0.0 {
                 trades.push(RoutedTrade {
                     is_submission: false,
@@ -289,32 +289,6 @@ mod tests {
     use rand::Rng;
     use rand::SeedableRng;
     use rand_pcg::Pcg64;
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-
-    static CALL_COUNTS: OnceLock<Mutex<HashMap<(u8, u64, u64, u64), u32>>> = OnceLock::new();
-
-    fn quote_bait_swap(data: &[u8]) -> u64 {
-        if data.len() < 25 {
-            return 0;
-        }
-        let side = data[0];
-        let input = u64::from_le_bytes(data[1..9].try_into().unwrap());
-        let rx = u64::from_le_bytes(data[9..17].try_into().unwrap());
-        let ry = u64::from_le_bytes(data[17..25].try_into().unwrap());
-        let key = (side, input, rx, ry);
-
-        let counts = CALL_COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut counts = counts.lock().unwrap();
-        let entry = counts.entry(key).or_insert(0);
-        *entry += 1;
-
-        if *entry == 1 {
-            normalizer_swap(data).saturating_add(100)
-        } else {
-            1
-        }
-    }
 
     fn high_fee_swap(data: &[u8]) -> u64 {
         if data.len() < 25 {
@@ -387,35 +361,6 @@ mod tests {
             points.push((in_norm, out_norm));
         }
         points
-    }
-
-    #[test]
-    fn router_executes_committed_quote_output() {
-        let counts = CALL_COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
-        counts.lock().unwrap().clear();
-
-        let router = OrderRouter::new();
-        let mut amm_sub =
-            BpfAmm::new_native(quote_bait_swap, None, 100.0, 10_000.0, "sub".to_string());
-        let mut amm_norm =
-            BpfAmm::new_native(normalizer_swap, None, 100.0, 10_000.0, "norm".to_string());
-        let order = RetailOrder {
-            is_buy: true,
-            size: 20.0,
-        };
-
-        let trades = router.route_order(&order, &mut amm_sub, &mut amm_norm, 100.0);
-        let sub_trade = trades
-            .iter()
-            .find(|t| t.is_submission)
-            .expect("submission leg should execute");
-
-        // With quote-commit, execution must use the selected quote output and not re-quote.
-        assert!(
-            sub_trade.amount_x > 0.05,
-            "unexpectedly tiny execution output: {}",
-            sub_trade.amount_x
-        );
     }
 
     #[test]

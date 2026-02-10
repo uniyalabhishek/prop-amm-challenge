@@ -97,7 +97,7 @@ impl Arbitrageur {
             return None;
         }
 
-        let output_x = amm.execute_buy_x_quoted(optimal_y, expected_output_x);
+        let output_x = amm.execute_buy_x(optimal_y);
         if output_x <= 0.0 {
             return None;
         }
@@ -158,7 +158,7 @@ impl Arbitrageur {
             return None;
         }
 
-        let output_y = amm.execute_sell_x_quoted(optimal_x, expected_output_y);
+        let output_y = amm.execute_sell_x(optimal_x);
         if output_y <= 0.0 {
             return None;
         }
