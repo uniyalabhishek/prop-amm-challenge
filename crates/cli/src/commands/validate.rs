@@ -154,7 +154,7 @@ pub fn run(so_path: &str) -> anyhow::Result<()> {
         } else {
             (rx.saturating_add(amount), ry.saturating_sub(out))
         };
-        executor.execute_after_swap(side, amount, out, post_rx, post_ry, &mut storage)?;
+        executor.execute_after_swap(side, amount, out, post_rx, post_ry, seed, &mut storage)?;
 
         for side in [0u8, 1u8] {
             check_curve_shape(

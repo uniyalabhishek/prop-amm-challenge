@@ -117,22 +117,24 @@ impl BpfExecutor {
         output_amount: u64,
         rx: u64,
         ry: u64,
+        step: u64,
         storage: &mut [u8],
     ) -> Result<(), ExecutorError> {
         self.input_buf.fill(0);
 
         // Write after_swap instruction data:
-        // [tag=2(1)][side(1)][input(8)][output(8)][rx(8)][ry(8)][storage(1024)]
+        // [tag=2(1)][side(1)][input(8)][output(8)][rx(8)][ry(8)][step(8)][storage(1024)]
         self.input_buf[16] = 2; // tag
         self.input_buf[17] = side;
         self.input_buf[18..26].copy_from_slice(&input_amount.to_le_bytes());
         self.input_buf[26..34].copy_from_slice(&output_amount.to_le_bytes());
         self.input_buf[34..42].copy_from_slice(&rx.to_le_bytes());
         self.input_buf[42..50].copy_from_slice(&ry.to_le_bytes());
+        self.input_buf[50..58].copy_from_slice(&step.to_le_bytes());
         let copy_len = storage.len().min(STORAGE_SIZE);
-        self.input_buf[50..50 + copy_len].copy_from_slice(&storage[..copy_len]);
+        self.input_buf[58..58 + copy_len].copy_from_slice(&storage[..copy_len]);
         if copy_len < STORAGE_SIZE {
-            self.input_buf[50 + copy_len..50 + STORAGE_SIZE].fill(0);
+            self.input_buf[58 + copy_len..58 + STORAGE_SIZE].fill(0);
         }
 
         let context = self.run_vm(AFTER_SWAP_SIZE)?;

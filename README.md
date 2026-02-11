@@ -86,7 +86,7 @@ Return 8 bytes via `sol_set_return_data` — the `output_amount: u64` (1e9 scale
 
 ### afterSwap (Optional)
 
-After each **real trade** (not during quoting), the engine calls your program with tag byte `2`. This lets you update your 1024-byte storage — useful for strategies that adapt over time (dynamic fees, volatility tracking, etc.).
+After each **real trade** (not during quoting), the engine calls your program with tag byte `2`. This lets you update your 1024-byte storage and observe the current simulation step — useful for strategies that adapt over time (dynamic fees, volatility tracking, etc.).
 
 | Offset | Size | Field         | Type   | Description                    |
 |--------|------|---------------|--------|--------------------------------|
@@ -96,7 +96,8 @@ After each **real trade** (not during quoting), the engine calls your program wi
 | 10     | 8    | output_amount | u64    | Output token amount (1e9 scale)|
 | 18     | 8    | reserve_x     | u64    | Post-trade X reserve           |
 | 26     | 8    | reserve_y     | u64    | Post-trade Y reserve           |
-| 34     | 1024 | storage       | [u8]   | Current storage (read/write)   |
+| 34     | 8    | step          | u64    | Current simulation step        |
+| 42     | 1024 | storage       | [u8]   | Current storage (read/write)   |
 
 To persist updated storage, call the `sol_set_storage` syscall with your modified buffer. If you don't call it, storage remains unchanged. The starter program's afterSwap is a no-op — storage is entirely optional.
 

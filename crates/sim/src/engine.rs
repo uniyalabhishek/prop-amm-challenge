@@ -37,7 +37,9 @@ fn run_sim_inner(
 
     let mut submission_edge = 0.0_f64;
 
-    for _ in 0..config.n_steps {
+    for step in 0..config.n_steps {
+        amm_sub.set_current_step(step as u64);
+        amm_norm.set_current_step(step as u64);
         let fair_price = price.step();
 
         if let Some(result) = arb.execute_arb(&mut amm_sub, fair_price) {
