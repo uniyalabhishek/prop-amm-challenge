@@ -200,7 +200,7 @@ fn test_after_swap_noop() {
     let mut exec = BpfExecutor::new(program);
     let mut storage = [0u8; STORAGE_SIZE];
 
-    exec.execute_after_swap(0, 1000, 500, 2000, 3000, &mut storage)
+    exec.execute_after_swap(0, 1000, 500, 2000, 3000, 0, &mut storage)
         .unwrap();
     // Storage should remain unchanged (starter is a no-op)
     assert_eq!(storage, [0u8; STORAGE_SIZE]);

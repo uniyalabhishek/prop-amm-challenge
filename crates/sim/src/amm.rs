@@ -15,6 +15,7 @@ pub struct BpfAmm {
     pub reserve_y: f64,
     pub name: String,
     storage: Vec<u8>,
+    current_step: u64,
 }
 
 impl BpfAmm {
@@ -25,6 +26,7 @@ impl BpfAmm {
             reserve_y,
             name,
             storage: vec![0u8; STORAGE_SIZE],
+            current_step: 0,
         }
     }
 
@@ -41,6 +43,7 @@ impl BpfAmm {
             reserve_y,
             name,
             storage: vec![0u8; STORAGE_SIZE],
+            current_step: 0,
         }
     }
 
@@ -71,6 +74,7 @@ impl BpfAmm {
                     output_amount,
                     rx,
                     ry,
+                    self.current_step,
                     &mut self.storage,
                 );
             }
@@ -81,10 +85,15 @@ impl BpfAmm {
                     output_amount,
                     rx,
                     ry,
+                    self.current_step,
                     &mut self.storage,
                 );
             }
         }
+    }
+
+    pub fn set_current_step(&mut self, step: u64) {
+        self.current_step = step;
     }
 
     #[inline]
@@ -213,5 +222,6 @@ impl BpfAmm {
         self.reserve_x = reserve_x;
         self.reserve_y = reserve_y;
         self.storage.fill(0);
+        self.current_step = 0;
     }
 }
