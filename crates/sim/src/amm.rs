@@ -218,6 +218,11 @@ impl BpfAmm {
         }
     }
 
+    pub fn set_initial_storage(&mut self, bytes: &[u8]) {
+        let n = bytes.len().min(self.storage.len());
+        self.storage[..n].copy_from_slice(&bytes[..n]);
+    }
+
     pub fn reset(&mut self, reserve_x: f64, reserve_y: f64) {
         self.reserve_x = reserve_x;
         self.reserve_y = reserve_y;
