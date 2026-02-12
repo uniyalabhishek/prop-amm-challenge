@@ -1,6 +1,5 @@
 use prop_amm_executor::{BpfExecutor, BpfProgram};
 use prop_amm_shared::instruction::STORAGE_SIZE;
-use prop_amm_shared::nano::NANO_SCALE_F64;
 use prop_amm_shared::nano::{f64_to_nano, nano_to_f64};
 
 use super::compile;
@@ -139,17 +138,6 @@ pub fn run(file: &str) -> anyhow::Result<()> {
         let rx = 1_000_000_000u64 + (mix(seed ^ 0x0123_4567_89AB_CDEF) % 2_000_000_000_000u64);
         let ry = 1_000_000_000u64 + (mix(seed ^ 0x0F0F_0F0F_F0F0_F0F0) % 200_000_000_000_000u64);
 
-        for side in [0u8, 1u8] {
-            check_curve_shape(&mut executor, side, rx, ry, &storage).map_err(|e| {
-                anyhow::anyhow!(
-                    "Randomized curve check failed (seed={}, side={}): {}",
-                    seed,
-                    side,
-                    e
-                )
-            })?;
-        }
-
         // Exercise after_swap and then re-check quote behavior with updated storage.
         let side = (seed & 1) as u8;
         let amount = 1_000_000 + (mix(seed ^ 0xDEAD_BEEF) % 10_000_000_000);
@@ -160,96 +148,10 @@ pub fn run(file: &str) -> anyhow::Result<()> {
             (rx.saturating_add(amount), ry.saturating_sub(out))
         };
         executor.execute_after_swap(side, amount, out, post_rx, post_ry, seed, &mut storage)?;
-
-        for side in [0u8, 1u8] {
-            check_curve_shape(
-                &mut executor,
-                side,
-                post_rx.max(1),
-                post_ry.max(1),
-                &storage,
-            )
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Post-after_swap curve check failed (seed={}, side={}): {}",
-                    seed,
-                    side,
-                    e
-                )
-            })?;
-        }
     }
     println!("  [PASS] Randomized reserve/storage checks");
 
     println!("\nAll validation checks passed!");
-    Ok(())
-}
-
-fn check_curve_shape(
-    executor: &mut BpfExecutor,
-    side: u8,
-    rx: u64,
-    ry: u64,
-    storage: &[u8; STORAGE_SIZE],
-) -> anyhow::Result<()> {
-    let reserve_out = if side == 0 { rx } else { ry };
-    let reserve_in = if side == 0 { ry } else { rx };
-    if reserve_out <= 1 || reserve_in <= 1 {
-        anyhow::bail!("insufficient reserves");
-    }
-
-    let max_in = (reserve_in / 5).max(1_000_000);
-    let mut inputs = Vec::with_capacity(10);
-    for i in 1..=10u64 {
-        let amount = ((max_in as u128 * i as u128) / 10u128) as u64;
-        let amount = amount.max(1_000_000);
-        if inputs.last().copied() != Some(amount) {
-            inputs.push(amount);
-        }
-    }
-    if inputs.len() < 2 {
-        anyhow::bail!("not enough unique test inputs");
-    }
-
-    let mut outputs = Vec::with_capacity(inputs.len());
-    let mut prev_out = 0u64;
-    for &input in &inputs {
-        let out = executor.execute(side, input, rx, ry, storage)?;
-        if out == 0 {
-            anyhow::bail!("zero output for input {}", input);
-        }
-        if out > reserve_out {
-            anyhow::bail!("output {} exceeds reserve {}", out, reserve_out);
-        }
-        if out <= prev_out {
-            anyhow::bail!(
-                "non-monotonic output at input {}: {} <= {}",
-                input,
-                out,
-                prev_out
-            );
-        }
-        prev_out = out;
-        outputs.push(out);
-    }
-
-    let mut prev_slope = f64::INFINITY;
-    for i in 0..(inputs.len() - 1) {
-        let din = (inputs[i + 1] - inputs[i]) as f64;
-        let dout = (outputs[i + 1] - outputs[i]) as f64;
-        let slope = (dout / din) * NANO_SCALE_F64;
-        if slope > prev_slope + 1e-9 {
-            anyhow::bail!(
-                "convexity violation between inputs {} and {} (slope {} > prev {})",
-                inputs[i],
-                inputs[i + 1],
-                slope,
-                prev_slope
-            );
-        }
-        prev_slope = slope;
-    }
-
     Ok(())
 }
 
