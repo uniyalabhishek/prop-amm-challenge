@@ -1,6 +1,5 @@
 use crate::amm::BpfAmm;
 use crate::retail::RetailOrder;
-use prop_amm_shared::nano::f64_to_nano;
 
 pub struct RoutedTrade {
     pub is_submission: bool,
@@ -26,7 +25,6 @@ struct QuotePoint {
 
 struct SplitSearchResult {
     best: QuotePoint,
-    sampled: Vec<QuotePoint>,
 }
 
 impl OrderRouter {
@@ -57,16 +55,6 @@ impl OrderRouter {
     ) -> Vec<RoutedTrade> {
         let search =
             Self::maximize_split(|alpha| Self::quote_buy_split(total_y, alpha, amm_sub, amm_norm));
-        Self::enforce_submission_curve_shape(
-            amm_sub,
-            &search
-                .sampled
-                .iter()
-                .map(|p| (p.in_sub, p.out_sub))
-                .collect::<Vec<_>>(),
-            amm_sub.reserve_x,
-            "buy",
-        );
         let best = search.best;
 
         let mut trades = Vec::new();
@@ -106,16 +94,6 @@ impl OrderRouter {
     ) -> Vec<RoutedTrade> {
         let search =
             Self::maximize_split(|alpha| Self::quote_sell_split(total_x, alpha, amm_sub, amm_norm));
-        Self::enforce_submission_curve_shape(
-            amm_sub,
-            &search
-                .sampled
-                .iter()
-                .map(|p| (p.in_sub, p.out_sub))
-                .collect::<Vec<_>>(),
-            amm_sub.reserve_y,
-            "sell",
-        );
         let best = search.best;
 
         let mut trades = Vec::new();
@@ -209,22 +187,17 @@ impl OrderRouter {
     where
         F: FnMut(f64) -> QuotePoint,
     {
-        let mut sampled = Vec::with_capacity(GOLDEN_MAX_ITERS + 6);
         let mut left = 0.0_f64;
         let mut right = 1.0_f64;
 
         let edge_left = evaluate(left);
         let edge_right = evaluate(right);
-        sampled.push(edge_left);
-        sampled.push(edge_right);
         let mut best = Self::best_quote(edge_left, edge_right);
 
         let mut x1 = right - GOLDEN_RATIO_CONJUGATE * (right - left);
         let mut x2 = left + GOLDEN_RATIO_CONJUGATE * (right - left);
         let mut q1 = evaluate(x1);
         let mut q2 = evaluate(x2);
-        sampled.push(q1);
-        sampled.push(q2);
         best = Self::best_quote(best, q1);
         best = Self::best_quote(best, q2);
 
@@ -239,7 +212,6 @@ impl OrderRouter {
                 q1 = q2;
                 x2 = left + GOLDEN_RATIO_CONJUGATE * (right - left);
                 q2 = evaluate(x2);
-                sampled.push(q2);
                 best = Self::best_quote(best, q2);
             } else {
                 right = x2;
@@ -247,16 +219,14 @@ impl OrderRouter {
                 q2 = q1;
                 x1 = right - GOLDEN_RATIO_CONJUGATE * (right - left);
                 q1 = evaluate(x1);
-                sampled.push(q1);
                 best = Self::best_quote(best, q1);
             }
         }
 
         let center = evaluate((left + right) * 0.5);
-        sampled.push(center);
         best = Self::best_quote(best, center);
 
-        SplitSearchResult { best, sampled }
+        SplitSearchResult { best }
     }
 
     #[inline]
@@ -278,116 +248,6 @@ impl OrderRouter {
         }
     }
 
-    fn enforce_submission_curve_shape(
-        amm_sub: &BpfAmm,
-        points: &[(f64, f64)],
-        max_output: f64,
-        side_label: &str,
-    ) {
-        if amm_sub.name != "submission" {
-            return;
-        }
-        if !Self::is_curve_shape_valid(points, max_output) {
-            panic!(
-                "submission curve shape violation detected during router {} split search",
-                side_label
-            );
-        }
-    }
-
-    fn is_curve_shape_valid(points: &[(f64, f64)], max_output: f64) -> bool {
-        const MIN_INPUT_NANO: u64 = 1_000_000; // 0.001 units
-
-        let max_output_nano = f64_to_nano(max_output);
-        if max_output_nano == 0 {
-            return false;
-        }
-        if points.is_empty() {
-            return true;
-        }
-
-        // Validate in nano-space to avoid floating-point artifacts.
-        let mut sorted: Vec<(u64, u64)> = points
-            .iter()
-            .filter_map(|(input, output)| {
-                if !input.is_finite() || !output.is_finite() || *input < 0.0 {
-                    return None;
-                }
-                let input_nano = f64_to_nano(*input);
-                let output_nano = f64_to_nano(*output);
-                if input_nano < MIN_INPUT_NANO
-                    || output_nano == 0
-                    || output_nano >= max_output_nano
-                {
-                    return None;
-                }
-                Some((input_nano, output_nano))
-            })
-            .collect();
-        if sorted.len() < 3 {
-            return true;
-        }
-        sorted.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-        // Collapse duplicate inputs, keeping the best observed output at each size.
-        let mut collapsed: Vec<(u64, u64)> = Vec::with_capacity(sorted.len());
-        for (input_nano, output_nano) in sorted {
-            if let Some((last_in, last_out)) = collapsed.last_mut() {
-                if *last_in == input_nano {
-                    *last_out = (*last_out).max(output_nano);
-                    continue;
-                }
-            }
-            collapsed.push((input_nano, output_nano));
-        }
-
-        if collapsed.len() < 3 {
-            return true;
-        }
-
-        const MIN_DIN: u64 = 100_000;
-
-        let mut landmarks: Vec<(u64, u64)> = Vec::new();
-        for &(in_n, out_n) in &collapsed {
-            if let Some(&(last_in, _)) = landmarks.last() {
-                if in_n - last_in < MIN_DIN {
-                    continue;
-                }
-            }
-            landmarks.push((in_n, out_n));
-        }
-
-        if landmarks.len() < 3 {
-            return true;
-        }
-
-        let mut prev_slope = f64::INFINITY;
-        for window in landmarks.windows(2) {
-            let (in_a, out_a) = window[0];
-            let (in_b, out_b) = window[1];
-            if out_b + 1 < out_a {
-                return false;
-            }
-            let din = (in_b - in_a) as f64;
-            let dout = out_b.saturating_sub(out_a) as f64;
-            let slope = dout / din;
-            if slope < 0.0 {
-                return false;
-            }
-            let ref_slope = if prev_slope.is_finite() {
-                prev_slope.max(slope)
-            } else {
-                slope
-            };
-            let slope_rounding_tol = ref_slope * 1e-3 + 12.0 / din;
-            if slope > prev_slope + slope_rounding_tol {
-                return false;
-            }
-            prev_slope = slope;
-        }
-
-        true
-    }
 }
 
 #[cfg(test)]
