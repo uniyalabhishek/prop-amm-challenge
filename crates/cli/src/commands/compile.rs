@@ -13,6 +13,7 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 pinocchio = "0.7"
+wincode = { version = "0.4", default-features = false, features = ["derive"] }
 
 [features]
 no-entrypoint = []
@@ -23,7 +24,11 @@ pub fn ensure_build_dir() -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(build_dir.join("src"))?;
 
     let cargo_path = build_dir.join("Cargo.toml");
-    if !cargo_path.exists() {
+    let should_write = match std::fs::read_to_string(&cargo_path) {
+        Ok(existing) => existing != CARGO_TOML,
+        Err(_) => true,
+    };
+    if should_write {
         std::fs::write(&cargo_path, CARGO_TOML)?;
     }
 

@@ -93,6 +93,8 @@ Your program receives instruction data with reserves and a 1024-byte read-only s
 
 Return 8 bytes via `sol_set_return_data` — the `output_amount: u64` (1e9 scale).
 
+Guideline: decode instruction payloads with `wincode` rather than manual byte offsets. See [wincode docs](https://docs.rs/wincode/latest/wincode/).
+
 ### afterSwap (Optional)
 
 After each **real trade** (not during quoting), the engine calls your program with tag byte `2`. This lets you update your 1024-byte storage and observe the current simulation step — useful for strategies that adapt over time (dynamic fees, volatility tracking, etc.).
@@ -133,6 +135,17 @@ Start with `programs/starter/` — a constant-product AMM with 500 bps fees. The
 ```rust
 use pinocchio::{account_info::AccountInfo, entrypoint, pubkey::Pubkey, ProgramResult};
 
+const STORAGE_SIZE: usize = 1024;
+
+#[derive(wincode::SchemaRead)]
+struct ComputeSwapInstruction {
+    side: u8,
+    input_amount: u64,
+    reserve_x: u64,
+    reserve_y: u64,
+    storage: [u8; STORAGE_SIZE],
+}
+
 #[cfg(not(feature = "no-entrypoint"))]
 entrypoint!(process_instruction);
 
@@ -152,11 +165,15 @@ pub fn process_instruction(
 }
 
 pub fn compute_swap(data: &[u8]) -> u64 {
-    let side = data[0];
-    let input = u64::from_le_bytes(data[1..9].try_into().unwrap()) as u128;
-    let rx = u64::from_le_bytes(data[9..17].try_into().unwrap()) as u128;
-    let ry = u64::from_le_bytes(data[17..25].try_into().unwrap()) as u128;
-    // Storage available at data[25..1049] if needed
+    let decoded: ComputeSwapInstruction = match wincode::deserialize(data) {
+        Ok(decoded) => decoded,
+        Err(_) => return 0,
+    };
+    let side = decoded.side;
+    let input = decoded.input_amount as u128;
+    let rx = decoded.reserve_x as u128;
+    let ry = decoded.reserve_y as u128;
+    let _storage = decoded.storage;
 
     // Your pricing logic here...
     todo!()
@@ -182,6 +199,7 @@ pub unsafe extern "C" fn after_swap_ffi(
 ### Tips
 
 - Use `u128` intermediates to avoid overflow (reserves at 1e9 scale can multiply to ~1e24)
+- Prefer typed decode with `wincode::deserialize` for swap/afterSwap payloads
 - Test convexity with `prop-amm validate` before running simulations
 - Think about how your marginal price schedule affects the routing split
 - The arbitrageur is efficient — don't try to extract value from informed flow
@@ -236,7 +254,7 @@ The server validates your program (monotonicity, convexity), then runs 1,000 sim
 
 ### Restrictions
 
-Your submitted source code must be a single `lib.rs` file. The only allowed dependency is `pinocchio` (for Solana BPF syscalls). The following are blocked for security:
+Your submitted source code must be a single `lib.rs` file. Allowed dependencies are `pinocchio` (for Solana BPF syscalls) and `wincode` (for instruction decoding). The following are blocked for security:
 
 - `include!()`, `include_str!()`, `include_bytes!()` (compile-time file access)
 - `env!()`, `option_env!()` (compile-time environment access)
