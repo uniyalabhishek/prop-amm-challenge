@@ -6,7 +6,8 @@ use std::{
 };
 
 const BUILD_RUNS_DIR: &str = ".build/runs";
-const FORBID_UNSAFE: &str = "#![forbid(unsafe_code)]\n";
+pub const NATIVE_SWAP_SYMBOL: &[u8] = b"__prop_amm_compute_swap_export";
+pub const NATIVE_AFTER_SWAP_SYMBOL: &[u8] = b"__prop_amm_after_swap_export";
 
 const CARGO_TOML: &str = r#"[package]
 name = "user_program"
@@ -137,16 +138,111 @@ fn find_native_lib(build_dir: &Path) -> anyhow::Result<PathBuf> {
 
 fn make_safe_submission_source(rs_path: &Path) -> anyhow::Result<String> {
     let source = std::fs::read_to_string(rs_path)?;
-    let safe_source = if source.starts_with(FORBID_UNSAFE) {
-        source
-    } else {
-        let mut wrapped = String::with_capacity(FORBID_UNSAFE.len() + source.len());
-        wrapped.push_str(FORBID_UNSAFE);
-        wrapped.push_str(&source);
-        wrapped
-    };
+    if source_contains_unsafe_keyword(&source)? {
+        anyhow::bail!(
+            "Unsafe Rust is not allowed in submissions. Remove all `unsafe` blocks/functions/keywords from your source."
+        );
+    }
+
+    let analysis = analyze_source(&source)?;
+    if !analysis.has_compute_swap {
+        anyhow::bail!("Submission must define `fn compute_swap(data: &[u8]) -> u64`.");
+    }
+
+    let mut safe_source = source;
+    safe_source.push('\n');
+    safe_source.push('\n');
+    safe_source.push_str(&native_shim_source(analysis.has_after_swap));
 
     Ok(safe_source)
+}
+
+#[derive(Clone, Copy)]
+struct SourceAnalysis {
+    has_compute_swap: bool,
+    has_after_swap: bool,
+}
+
+fn analyze_source(source: &str) -> anyhow::Result<SourceAnalysis> {
+    let parsed = syn::parse_file(source)
+        .map_err(|e| anyhow::anyhow!("Failed to parse source for function checks: {}", e))?;
+
+    let mut has_compute_swap = false;
+    let mut has_after_swap = false;
+
+    for item in parsed.items {
+        if let syn::Item::Fn(item_fn) = item {
+            let name = item_fn.sig.ident.to_string();
+            if name == "compute_swap" {
+                has_compute_swap = true;
+            } else if name == "after_swap" {
+                has_after_swap = true;
+            }
+        }
+    }
+
+    Ok(SourceAnalysis {
+        has_compute_swap,
+        has_after_swap,
+    })
+}
+
+fn native_shim_source(has_after_swap: bool) -> String {
+    let after_swap_target = if has_after_swap {
+        "after_swap"
+    } else {
+        "__prop_amm_after_swap_noop"
+    };
+
+    format!(
+        r#"#[cfg(not(target_os = "solana"))]
+#[inline]
+fn __prop_amm_after_swap_noop(_data: &[u8], _storage: &mut [u8]) {{}}
+
+#[cfg(not(target_os = "solana"))]
+#[no_mangle]
+pub extern "C" fn __prop_amm_compute_swap_export(data: *const u8, len: usize) -> u64 {{
+    prop_amm_submission_sdk::ffi_compute_swap(data, len, compute_swap)
+}}
+
+#[cfg(not(target_os = "solana"))]
+#[no_mangle]
+pub extern "C" fn __prop_amm_after_swap_export(
+    data: *const u8,
+    data_len: usize,
+    storage: *mut u8,
+    storage_len: usize,
+) {{
+    prop_amm_submission_sdk::ffi_after_swap(
+        data,
+        data_len,
+        storage,
+        storage_len,
+        {},
+    );
+}}
+"#,
+        after_swap_target
+    )
+}
+
+fn source_contains_unsafe_keyword(source: &str) -> anyhow::Result<bool> {
+    let stream: proc_macro2::TokenStream = source
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse source for safety checks: {}", e))?;
+    Ok(token_stream_contains_unsafe(stream))
+}
+
+fn token_stream_contains_unsafe(stream: proc_macro2::TokenStream) -> bool {
+    stream.into_iter().any(token_tree_contains_unsafe)
+}
+
+fn token_tree_contains_unsafe(tree: proc_macro2::TokenTree) -> bool {
+    match tree {
+        proc_macro2::TokenTree::Ident(ident) => ident == "unsafe",
+        proc_macro2::TokenTree::Group(group) => token_stream_contains_unsafe(group.stream()),
+        _ => false,
+    }
 }
 
 fn find_bpf_so(build_dir: &Path) -> anyhow::Result<PathBuf> {

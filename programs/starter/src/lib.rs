@@ -1,4 +1,5 @@
 use pinocchio::{account_info::AccountInfo, entrypoint, pubkey::Pubkey, ProgramResult};
+use prop_amm_submission_sdk::{set_return_data_bytes, set_return_data_u64};
 
 const NAME: &str = "My Strategy";
 const FEE_NUMERATOR: u128 = 950;
@@ -30,18 +31,14 @@ pub fn process_instruction(
         // tag 0 or 1 = compute_swap (side)
         0 | 1 => {
             let output = compute_swap(instruction_data);
-            unsafe {
-                pinocchio::syscalls::sol_set_return_data(output.to_le_bytes().as_ptr(), 8);
-            }
+            set_return_data_u64(output);
         }
         // tag 2 = after_swap (no-op for starter)
         2 => {
             // No storage updates needed for basic CFMM
         }
         // tag 3 = get_name (for leaderboard display)
-        3 => unsafe {
-            pinocchio::syscalls::sol_set_return_data(NAME.as_ptr(), NAME.len() as u64);
-        },
+        3 => set_return_data_bytes(NAME.as_bytes()),
         _ => {}
     }
 
@@ -80,23 +77,4 @@ pub fn compute_swap(data: &[u8]) -> u64 {
         }
         _ => 0,
     }
-}
-
-/// FFI export for native shared library loading (used by prop-amm run --native)
-#[cfg(not(target_os = "solana"))]
-#[no_mangle]
-pub unsafe extern "C" fn compute_swap_ffi(data: *const u8, len: usize) -> u64 {
-    compute_swap(core::slice::from_raw_parts(data, len))
-}
-
-/// FFI export for after_swap hook (no-op for starter)
-#[cfg(not(target_os = "solana"))]
-#[no_mangle]
-pub unsafe extern "C" fn after_swap_ffi(
-    _data: *const u8,
-    _data_len: usize,
-    _storage: *mut u8,
-    _storage_len: usize,
-) {
-    // No-op: starter doesn't use storage
 }

@@ -279,9 +279,11 @@ dependencies = [
  "anyhow",
  "clap",
  "libloading",
+ "proc-macro2",
  "prop-amm-executor",
  "prop-amm-shared",
  "prop-amm-sim",
+ "syn",
 ]
 
 [[package]]
