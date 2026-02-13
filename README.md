@@ -124,7 +124,7 @@ To persist updated storage, call the `sol_set_storage` syscall with your modifie
 
 | Requirement   | Description                                                        |
 |---------------|--------------------------------------------------------------------|
-| **Convex**    | Marginal price must worsen with trade size. Non-convex programs are rejected. |
+| **NAME**      | Must define `const NAME: &str = "...";` — shown on the leaderboard. |
 | **Monotonic** | Larger input must produce larger output.                           |
 | **< 100k CU** | Must execute within the compute unit limit.                       |
 
@@ -134,6 +134,9 @@ Start with `programs/starter/` — a constant-product AMM with 500 bps fees. The
 
 ```rust
 use pinocchio::{account_info::AccountInfo, entrypoint, pubkey::Pubkey, ProgramResult};
+
+/// Required: displayed on the leaderboard.
+const NAME: &str = "My Strategy";
 
 const STORAGE_SIZE: usize = 1024;
 
@@ -158,6 +161,9 @@ pub fn process_instruction(
             unsafe { pinocchio::syscalls::sol_set_return_data(output.to_le_bytes().as_ptr(), 8); }
         }
         2 => {      // afterSwap — update storage here if needed
+        }
+        3 => unsafe {  // Return strategy name for leaderboard
+            pinocchio::syscalls::sol_set_return_data(NAME.as_ptr(), NAME.len() as u64);
         }
         _ => {}
     }
