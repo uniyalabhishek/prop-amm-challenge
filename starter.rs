@@ -1,7 +1,5 @@
 use pinocchio::{account_info::AccountInfo, entrypoint, pubkey::Pubkey, ProgramResult};
-use prop_amm_submission_sdk::{
-    ffi_after_swap, ffi_compute_swap, set_return_data_bytes, set_return_data_u64,
-};
+use prop_amm_submission_sdk::{set_return_data_bytes, set_return_data_u64};
 
 const NAME: &str = "My Strategy";
 const FEE_NUMERATOR: u128 = 950;
@@ -79,28 +77,4 @@ pub fn compute_swap(data: &[u8]) -> u64 {
         }
         _ => 0,
     }
-}
-
-/// FFI export for native shared library loading (used by prop-amm run)
-#[cfg(not(target_os = "solana"))]
-#[no_mangle]
-pub extern "C" fn compute_swap_ffi(data: *const u8, len: usize) -> u64 {
-    ffi_compute_swap(data, len, compute_swap)
-}
-
-/// Optional after_swap hook for native mode.
-pub fn after_swap(_data: &[u8], _storage: &mut [u8]) {
-    // No-op: starter doesn't use storage
-}
-
-/// FFI export for after_swap hook (no-op for starter)
-#[cfg(not(target_os = "solana"))]
-#[no_mangle]
-pub extern "C" fn after_swap_ffi(
-    data: *const u8,
-    data_len: usize,
-    storage: *mut u8,
-    storage_len: usize,
-) {
-    ffi_after_swap(data, data_len, storage, storage_len, after_swap);
 }

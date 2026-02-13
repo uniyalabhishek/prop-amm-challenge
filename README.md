@@ -136,9 +136,7 @@ Start with `programs/starter/` — a constant-product AMM with 500 bps fees. The
 
 ```rust
 use pinocchio::{account_info::AccountInfo, entrypoint, pubkey::Pubkey, ProgramResult};
-use prop_amm_submission_sdk::{
-    ffi_after_swap, ffi_compute_swap, set_return_data_bytes, set_return_data_u64,
-};
+use prop_amm_submission_sdk::{set_return_data_bytes, set_return_data_u64};
 
 /// Required: displayed on the leaderboard.
 const NAME: &str = "My Strategy";
@@ -192,26 +190,13 @@ pub fn compute_swap(data: &[u8]) -> u64 {
     todo!()
 }
 
-/// Required for native execution (local testing).
-#[cfg(not(target_os = "solana"))]
-#[no_mangle]
-pub extern "C" fn compute_swap_ffi(data: *const u8, len: usize) -> u64 {
-    ffi_compute_swap(data, len, compute_swap)
-}
-
+/// Optional native hook for local testing.
 pub fn after_swap(_data: &[u8], _storage: &mut [u8]) {
     // Update storage here if needed
 }
-
-/// Optional: afterSwap hook for native mode.
-#[cfg(not(target_os = "solana"))]
-#[no_mangle]
-pub extern "C" fn after_swap_ffi(
-    data: *const u8, data_len: usize, storage: *mut u8, storage_len: usize,
-) {
-    ffi_after_swap(data, data_len, storage, storage_len, after_swap);
-}
 ```
+
+For local native runs, the CLI auto-generates adapter exports. You only need strategy logic (`compute_swap` and optionally `after_swap`) in your submission file.
 
 ### Tips
 

@@ -24,7 +24,14 @@ fn dynamic_swap(data: &[u8]) -> u64 {
 fn dynamic_after_swap(data: &[u8], storage: &mut [u8]) {
     let ptr = LOADED_AFTER_SWAP.load(Ordering::Relaxed);
     let f: FfiAfterSwapFn = unsafe { std::mem::transmute(ptr) };
-    unsafe { f(data.as_ptr(), data.len(), storage.as_mut_ptr(), storage.len()) }
+    unsafe {
+        f(
+            data.as_ptr(),
+            data.len(),
+            storage.as_mut_ptr(),
+            storage.len(),
+        )
+    }
 }
 
 pub fn run(
@@ -60,17 +67,22 @@ fn run_native(
     );
     let lib = Box::leak(lib);
 
-    let swap_fn: libloading::Symbol<FfiSwapFn> = unsafe { lib.get(b"compute_swap_ffi") }
-        .map_err(|e| anyhow::anyhow!("Missing compute_swap_ffi symbol: {}", e))?;
+    let swap_fn: libloading::Symbol<FfiSwapFn> = unsafe {
+        lib.get(compile::NATIVE_SWAP_SYMBOL)
+            .or_else(|_| lib.get(b"compute_swap_ffi"))
+    }
+    .map_err(|e| anyhow::anyhow!("Missing native swap symbol: {}", e))?;
     LOADED_SWAP.store(*swap_fn as *mut (), Ordering::Relaxed);
 
-    let has_after_swap =
-        if let Ok(after_fn) = unsafe { lib.get::<FfiAfterSwapFn>(b"after_swap_ffi") } {
-            LOADED_AFTER_SWAP.store(*after_fn as *mut (), Ordering::Relaxed);
-            true
-        } else {
-            false
-        };
+    let has_after_swap = if let Ok(after_fn) = unsafe {
+        lib.get::<FfiAfterSwapFn>(compile::NATIVE_AFTER_SWAP_SYMBOL)
+            .or_else(|_| lib.get::<FfiAfterSwapFn>(b"after_swap_ffi"))
+    } {
+        LOADED_AFTER_SWAP.store(*after_fn as *mut (), Ordering::Relaxed);
+        true
+    } else {
+        false
+    };
 
     let submission_after_swap: Option<AfterSwapFn> = if has_after_swap {
         Some(dynamic_after_swap)
