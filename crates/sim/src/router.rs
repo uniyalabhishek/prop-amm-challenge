@@ -1,5 +1,7 @@
 use crate::amm::BpfAmm;
+use crate::curve_checks;
 use crate::retail::RetailOrder;
+use crate::search_stats;
 
 pub struct RoutedTrade {
     pub is_submission: bool,
@@ -12,6 +14,10 @@ const MIN_TRADE_SIZE: f64 = 0.001;
 const GOLDEN_RATIO_CONJUGATE: f64 = 0.618_033_988_749_894_8;
 const GOLDEN_MAX_ITERS: usize = 14;
 const GOLDEN_ALPHA_TOL: f64 = 1e-3;
+// Stop once the submission split amount is within ~1% (relative bracket width in amount-space).
+const GOLDEN_SUBMISSION_AMOUNT_REL_TOL: f64 = 1e-2;
+// Stop once the two evaluated total outputs are within 1% of each other.
+const GOLDEN_SCORE_REL_GAP_TOL: f64 = 1e-2;
 
 pub struct OrderRouter;
 
@@ -54,12 +60,18 @@ impl OrderRouter {
         amm_sub: &mut BpfAmm,
         amm_norm: &mut BpfAmm,
     ) -> Vec<RoutedTrade> {
-        let search =
-            Self::maximize_split(|alpha| Self::quote_buy_split(total_y, alpha, amm_sub, amm_norm));
-        Self::enforce_submission_monotonicity(
-            amm_sub,
-            &search.sampled.iter().map(|p| (p.in_sub, p.out_sub)).collect::<Vec<_>>(),
-            "buy",
+        let search = Self::maximize_split(total_y, |alpha| {
+            Self::quote_buy_split(total_y, alpha, amm_sub, amm_norm)
+        });
+        curve_checks::enforce_submission_monotonic_concave(
+            &amm_sub.name,
+            &search
+                .sampled
+                .iter()
+                .map(|p| (p.in_sub, p.out_sub))
+                .collect::<Vec<_>>(),
+            MIN_TRADE_SIZE,
+            "router buy split search",
         );
         let best = search.best;
 
@@ -98,12 +110,18 @@ impl OrderRouter {
         amm_sub: &mut BpfAmm,
         amm_norm: &mut BpfAmm,
     ) -> Vec<RoutedTrade> {
-        let search =
-            Self::maximize_split(|alpha| Self::quote_sell_split(total_x, alpha, amm_sub, amm_norm));
-        Self::enforce_submission_monotonicity(
-            amm_sub,
-            &search.sampled.iter().map(|p| (p.in_sub, p.out_sub)).collect::<Vec<_>>(),
-            "sell",
+        let search = Self::maximize_split(total_x, |alpha| {
+            Self::quote_sell_split(total_x, alpha, amm_sub, amm_norm)
+        });
+        curve_checks::enforce_submission_monotonic_concave(
+            &amm_sub.name,
+            &search
+                .sampled
+                .iter()
+                .map(|p| (p.in_sub, p.out_sub))
+                .collect::<Vec<_>>(),
+            MIN_TRADE_SIZE,
+            "router sell split search",
         );
         let best = search.best;
 
@@ -194,15 +212,18 @@ impl OrderRouter {
         }
     }
 
-    fn maximize_split<F>(mut evaluate: F) -> SplitSearchResult
+    fn maximize_split<F>(total_input: f64, mut evaluate: F) -> SplitSearchResult
     where
         F: FnMut(f64) -> QuotePoint,
     {
+        search_stats::inc_router_call();
         let mut sampled = Vec::with_capacity(GOLDEN_MAX_ITERS + 6);
         let mut left = 0.0_f64;
         let mut right = 1.0_f64;
 
+        search_stats::inc_router_eval();
         let edge_left = evaluate(left);
+        search_stats::inc_router_eval();
         let edge_right = evaluate(right);
         sampled.push(edge_left);
         sampled.push(edge_right);
@@ -210,7 +231,9 @@ impl OrderRouter {
 
         let mut x1 = right - GOLDEN_RATIO_CONJUGATE * (right - left);
         let mut x2 = left + GOLDEN_RATIO_CONJUGATE * (right - left);
+        search_stats::inc_router_eval();
         let mut q1 = evaluate(x1);
+        search_stats::inc_router_eval();
         let mut q2 = evaluate(x2);
         sampled.push(q1);
         sampled.push(q2);
@@ -218,7 +241,25 @@ impl OrderRouter {
         best = Self::best_quote(best, q2);
 
         for _ in 0..GOLDEN_MAX_ITERS {
+            search_stats::inc_router_iter();
             if right - left <= GOLDEN_ALPHA_TOL {
+                break;
+            }
+
+            let alpha_mid = 0.5 * (left + right);
+            let sub_mid_amount = total_input * alpha_mid;
+            let amount_width = total_input * (right - left);
+            let amount_scale = sub_mid_amount.abs().max(MIN_TRADE_SIZE);
+            if amount_width <= GOLDEN_SUBMISSION_AMOUNT_REL_TOL * amount_scale {
+                break;
+            }
+
+            if Self::within_rel_gap(
+                Self::quote_score(&q1),
+                Self::quote_score(&q2),
+                GOLDEN_SCORE_REL_GAP_TOL,
+            ) {
+                search_stats::inc_router_early_stop_rel_gap();
                 break;
             }
 
@@ -227,6 +268,7 @@ impl OrderRouter {
                 x1 = x2;
                 q1 = q2;
                 x2 = left + GOLDEN_RATIO_CONJUGATE * (right - left);
+                search_stats::inc_router_eval();
                 q2 = evaluate(x2);
                 sampled.push(q2);
                 best = Self::best_quote(best, q2);
@@ -235,12 +277,14 @@ impl OrderRouter {
                 x2 = x1;
                 q2 = q1;
                 x1 = right - GOLDEN_RATIO_CONJUGATE * (right - left);
+                search_stats::inc_router_eval();
                 q1 = evaluate(x1);
                 sampled.push(q1);
                 best = Self::best_quote(best, q1);
             }
         }
 
+        search_stats::inc_router_eval();
         let center = evaluate((left + right) * 0.5);
         sampled.push(center);
         best = Self::best_quote(best, center);
@@ -259,38 +303,20 @@ impl OrderRouter {
     }
 
     #[inline]
+    fn within_rel_gap(a: f64, b: f64, rel_tol: f64) -> bool {
+        if !a.is_finite() || !b.is_finite() {
+            return false;
+        }
+        let denom = a.abs().max(b.abs()).max(1e-12);
+        (a - b).abs() <= rel_tol * denom
+    }
+
+    #[inline]
     fn best_quote(a: QuotePoint, b: QuotePoint) -> QuotePoint {
         if Self::quote_score(&b) > Self::quote_score(&a) {
             b
         } else {
             a
-        }
-    }
-
-    fn enforce_submission_monotonicity(
-        amm_sub: &BpfAmm,
-        points: &[(f64, f64)],
-        side_label: &str,
-    ) {
-        if amm_sub.name != "submission" {
-            return;
-        }
-        let mut sorted: Vec<(f64, f64)> = points
-            .iter()
-            .copied()
-            .filter(|(i, o)| i.is_finite() && o.is_finite() && *i > MIN_TRADE_SIZE)
-            .collect();
-        sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        for window in sorted.windows(2) {
-            let (in_a, out_a) = window[0];
-            let (in_b, out_b) = window[1];
-            if in_b > in_a + 1e-9 && out_b + 1e-9 < out_a {
-                panic!(
-                    "submission monotonicity violation during router {side_label} split search: \
-                     input {in_a:.6} -> output {out_a:.6}, input {in_b:.6} -> output {out_b:.6}"
-                );
-            }
         }
     }
 }
@@ -308,8 +334,9 @@ mod tests {
     use rand_pcg::Pcg64;
 
     const BRUTE_FORCE_STEPS: usize = 4000;
-    const DIVERSE_CURVE_TOLERANCE: f64 = 8.0e-4;
-    const ENDPOINT_REGIME_TOLERANCE: f64 = 1.5e-3;
+    // Router search is intentionally approximate for speed; 1% relative error is acceptable.
+    const DIVERSE_CURVE_TOLERANCE: f64 = 1.0e-2;
+    const ENDPOINT_REGIME_TOLERANCE: f64 = 1.0e-2;
 
     fn cp_fee_swap(data: &[u8], fee_numerator: u128, fee_denominator: u128) -> u64 {
         if data.len() < 25 {
