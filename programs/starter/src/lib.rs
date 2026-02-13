@@ -38,6 +38,10 @@ pub fn process_instruction(
         2 => {
             // No storage updates needed for basic CFMM
         }
+        // tag 3 = get_name (for leaderboard display)
+        3 => unsafe {
+            pinocchio::syscalls::sol_set_return_data(NAME.as_ptr(), NAME.len() as u64);
+        },
         _ => {}
     }
 
