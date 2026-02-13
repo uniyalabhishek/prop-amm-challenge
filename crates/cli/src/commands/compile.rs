@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BUILD_DIR: &str = ".build";
+const FORBID_UNSAFE: &str = "#![forbid(unsafe_code)]\n";
 
 const CARGO_TOML: &str = r#"[package]
 name = "user_program"
@@ -42,7 +43,7 @@ pub fn compile_native(rs_file: &str) -> anyhow::Result<PathBuf> {
     }
 
     let build_dir = ensure_build_dir()?;
-    std::fs::copy(rs_path, build_dir.join("src/lib.rs"))?;
+    write_safe_submission_source(rs_path, &build_dir)?;
 
     let status = Command::new("cargo")
         .arg("build")
@@ -67,7 +68,7 @@ pub fn compile_bpf(rs_file: &str) -> anyhow::Result<PathBuf> {
     }
 
     let build_dir = ensure_build_dir()?;
-    std::fs::copy(rs_path, build_dir.join("src/lib.rs"))?;
+    write_safe_submission_source(rs_path, &build_dir)?;
 
     let status = Command::new("cargo")
         .arg("build-sbf")
@@ -104,6 +105,21 @@ fn find_native_lib(build_dir: &Path) -> anyhow::Result<PathBuf> {
         "No native library found in {}/target/release/",
         build_dir.display()
     )
+}
+
+fn write_safe_submission_source(rs_path: &Path, build_dir: &Path) -> anyhow::Result<()> {
+    let source = std::fs::read_to_string(rs_path)?;
+    let output = if source.starts_with(FORBID_UNSAFE) {
+        source
+    } else {
+        let mut wrapped = String::with_capacity(FORBID_UNSAFE.len() + source.len());
+        wrapped.push_str(FORBID_UNSAFE);
+        wrapped.push_str(&source);
+        wrapped
+    };
+
+    std::fs::write(build_dir.join("src/lib.rs"), output)?;
+    Ok(())
 }
 
 fn find_bpf_so(build_dir: &Path) -> anyhow::Result<PathBuf> {
