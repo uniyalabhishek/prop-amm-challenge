@@ -23,6 +23,7 @@ static THRESHOLD_BPS: AtomicU64 = AtomicU64::new(20);
 static RETAIL_UP_BPS: AtomicU64 = AtomicU64::new(0);
 static GAP_DOWN_BPS: AtomicU64 = AtomicU64::new(0);
 static OFFSET_CAP_BPS: AtomicU64 = AtomicU64::new(30);
+static INVENTORY_SKEW_K: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug)]
 struct Params {
@@ -33,6 +34,7 @@ struct Params {
     retail_up_bps: u16,
     gap_down_bps: u16,
     offset_cap_bps: u16,
+    inventory_skew_k: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -78,13 +80,29 @@ fn spot_price_q32(reserve_x: u64, reserve_y: u64) -> u64 {
 }
 
 #[inline]
-fn compute_dynamic_fee_bps(storage: &[u8]) -> u128 {
+fn compute_dynamic_fee_bps(storage: &[u8], side: u8, reserve_x: u128, reserve_y: u128) -> u128 {
     let base = BASE_FEE_BPS.load(AtomicOrdering::Relaxed) as u128;
     let sensitivity = VOL_SENSITIVITY.load(AtomicOrdering::Relaxed) as u128;
     let ewma_abs_return_q32 = read_u64(storage, 16) as u128;
     let vol_add = ewma_abs_return_q32.saturating_mul(sensitivity) / Q32;
     let fee_offset = read_i64(storage, 24) as i128;
-    let fee = base as i128 + vol_add as i128 + fee_offset;
+    let mut fee = base as i128 + vol_add as i128 + fee_offset;
+
+    let anchor_price_q32 = read_u64(storage, 8) as u128;
+    if anchor_price_q32 > 0 && reserve_x > 0 {
+        let current_price_q32 = reserve_y.saturating_mul(Q32) / reserve_x;
+        let current_q64 = current_price_q32.saturating_mul(Q32);
+        let anchor_q64 = anchor_price_q32.saturating_mul(Q32);
+        let skew_q32_signed = ((current_q64 as i128) - (anchor_q64 as i128)) / anchor_price_q32 as i128;
+        let inventory_k = INVENTORY_SKEW_K.load(AtomicOrdering::Relaxed) as i128;
+        let skew_adjust_bps = skew_q32_signed.saturating_mul(inventory_k) / Q32 as i128;
+        if side == 0 {
+            fee = fee.saturating_add(skew_adjust_bps);
+        } else if side == 1 {
+            fee = fee.saturating_sub(skew_adjust_bps);
+        }
+    }
+
     fee.clamp(MIN_FEE_BPS, MAX_FEE_BPS as i128) as u128
 }
 
@@ -103,7 +121,7 @@ fn dynamic_piecewise_swap(data: &[u8]) -> u64 {
         return 0;
     }
 
-    let fee_low_bps = compute_dynamic_fee_bps(storage);
+    let fee_low_bps = compute_dynamic_fee_bps(storage, side, reserve_x, reserve_y);
     let tail_fee_bps = TAIL_FEE_BPS.load(AtomicOrdering::Relaxed) as u128;
     let fee_high_bps = fee_low_bps.saturating_add(tail_fee_bps).min(MAX_FEE_BPS);
     let threshold_bps = THRESHOLD_BPS.load(AtomicOrdering::Relaxed) as u128;
@@ -215,6 +233,7 @@ fn set_params(params: Params) {
     RETAIL_UP_BPS.store(params.retail_up_bps as u64, AtomicOrdering::Relaxed);
     GAP_DOWN_BPS.store(params.gap_down_bps as u64, AtomicOrdering::Relaxed);
     OFFSET_CAP_BPS.store(params.offset_cap_bps as u64, AtomicOrdering::Relaxed);
+    INVENTORY_SKEW_K.store(params.inventory_skew_k as u64, AtomicOrdering::Relaxed);
 }
 
 fn evaluate_params(
@@ -277,7 +296,7 @@ fn print_results(title: &str, results: &[EvalResult]) {
     println!("\n{}", title);
     for (idx, result) in results.iter().enumerate() {
         println!(
-            "#{:02} combined={:8.2} train={:8.2} holdout={:8.2} | base={} vol_k={} tail={} threshold_bps={} retail_up={} gap_down={} cap={}",
+            "#{:02} combined={:8.2} train={:8.2} holdout={:8.2} | base={} vol_k={} tail={} threshold_bps={} retail_up={} gap_down={} cap={} inv_k={}",
             idx + 1,
             result.combined_avg_edge,
             result.train_avg_edge,
@@ -289,6 +308,7 @@ fn print_results(title: &str, results: &[EvalResult]) {
             result.params.retail_up_bps,
             result.params.gap_down_bps,
             result.params.offset_cap_bps,
+            result.params.inventory_skew_k,
         );
     }
 }
@@ -327,6 +347,7 @@ fn main() -> Result<()> {
                     retail_up_bps: 0,
                     gap_down_bps: 0,
                     offset_cap_bps: 30,
+                    inventory_skew_k: 0,
                 },
                 quick_sims,
                 quick_steps,
@@ -355,6 +376,7 @@ fn main() -> Result<()> {
                         retail_up_bps: 0,
                         gap_down_bps: 0,
                         offset_cap_bps: 30,
+                        inventory_skew_k: 0,
                     },
                     quick_sims,
                     quick_steps,
@@ -387,6 +409,7 @@ fn main() -> Result<()> {
                             retail_up_bps,
                             gap_down_bps,
                             offset_cap_bps,
+                            inventory_skew_k: 0,
                         },
                         quick_sims,
                         quick_steps,
@@ -401,6 +424,33 @@ fn main() -> Result<()> {
     let top_stage3 = top_k(stage3, 15);
     print_results("Top adaptive candidates after stage 3", &top_stage3);
 
+    // Stage 4: Add side-specific inventory skewing around the most recent anchor price.
+    let inventory_skew_candidates = [0u16, 500, 1_000, 2_000, 4_000, 8_000];
+    let mut stage4 = Vec::new();
+    for seed in top_stage3.iter().take(4) {
+        for inventory_skew_k in inventory_skew_candidates {
+            stage4.push(evaluate_params(
+                Params {
+                    base_fee_bps: seed.params.base_fee_bps,
+                    vol_sensitivity: seed.params.vol_sensitivity,
+                    tail_fee_bps: seed.params.tail_fee_bps,
+                    threshold_bps: seed.params.threshold_bps,
+                    retail_up_bps: seed.params.retail_up_bps,
+                    gap_down_bps: seed.params.gap_down_bps,
+                    offset_cap_bps: seed.params.offset_cap_bps,
+                    inventory_skew_k,
+                },
+                quick_sims,
+                quick_steps,
+                workers,
+                train_seed_start,
+                holdout_seed_start,
+            )?);
+        }
+    }
+    let top_stage4 = top_k(stage4, 15);
+    print_results("Top inventory-skew candidates after stage 4", &top_stage4);
+
     let deep_sims = env_parse("DEEP_SIMS", 200u32);
     let deep_steps = env_parse("DEEP_STEPS", 10_000u32);
     println!(
@@ -409,7 +459,7 @@ fn main() -> Result<()> {
     );
 
     let mut deep_results = Vec::new();
-    for quick_best in top_stage3.iter().take(8) {
+    for quick_best in top_stage4.iter().take(8) {
         deep_results.push(evaluate_params(
             quick_best.params,
             deep_sims,
