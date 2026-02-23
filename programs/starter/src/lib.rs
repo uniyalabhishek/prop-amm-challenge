@@ -246,7 +246,7 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
         let next_ewma_q32 = (prev_ewma_q32.saturating_mul(EWMA_ALPHA_NUM) / EWMA_ALPHA_DEN)
             .saturating_add(ret_q32 / EWMA_ALPHA_DEN);
 
-        let next_p_hat_q32 = (p_hat_q32.saturating_mul(BPS_DENOMINATOR - PHAT_ALPHA_BPS)
+        let next_p_hat_q32 = ((p_hat_q32 as u128).saturating_mul(BPS_DENOMINATOR - PHAT_ALPHA_BPS)
             + (current_spot_q32 as u128).saturating_mul(PHAT_ALPHA_BPS))
             / BPS_DENOMINATOR;
 
