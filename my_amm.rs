@@ -7,18 +7,14 @@ const MODEL_USED: &str = "None";
 const STORAGE_SIZE: usize = 1024;
 const NANO: f64 = 1_000_000_000.0;
 
-// Exponential curve: output = α * res_out * (1 - exp(-γ * input / (α * res_in)))
-// More concave than constant-product → reduces arb extraction ~38%
-// while barely affecting retail output (< 0.2% difference for mean retail size)
+/// Exponential curve parameter: controls concavity vs depth tradeoff.
+/// α=0.30 reduces arb losses ~38% vs constant-product while barely
+/// affecting retail output (< 0.2% for mean retail trade size of 20Y).
 const ALPHA: f64 = 0.30;
 const DEFAULT_FEE_BPS: f64 = 55.0;
 const WARMUP_MIN: u32 = 10;
 
-// Storage layout:
-// [0..8]:   last implied price (f64)
-// [8..16]:  sum of squared per-step log returns (f64)
-// [16..24]: last step (u64)
-// [24..28]: observation count (u32)
+// Storage: [0..8] last_price, [8..16] sum_sigma_sq, [16..24] last_step, [24..28] sigma_count
 
 #[derive(wincode::SchemaRead)]
 struct ComputeSwapInstruction {
@@ -37,9 +33,7 @@ pub fn process_instruction(
     _accounts: &[AccountInfo],
     instruction_data: &[u8],
 ) -> ProgramResult {
-    if instruction_data.is_empty() {
-        return Ok(());
-    }
+    if instruction_data.is_empty() { return Ok(()); }
     match instruction_data[0] {
         0 | 1 => {
             let output = compute_swap(instruction_data);
@@ -59,9 +53,7 @@ pub fn process_instruction(
     Ok(())
 }
 
-pub fn get_model_used() -> &'static str {
-    MODEL_USED
-}
+pub fn get_model_used() -> &'static str { MODEL_USED }
 
 fn rd_f64(s: &[u8], o: usize) -> f64 {
     f64::from_le_bytes([s[o], s[o+1], s[o+2], s[o+3], s[o+4], s[o+5], s[o+6], s[o+7]])
@@ -84,18 +76,12 @@ fn wr_u32(s: &mut [u8], o: usize, v: u32) {
 
 fn get_fee_bps(storage: &[u8; STORAGE_SIZE]) -> f64 {
     let n = rd_u32(storage, 24);
-    if n < WARMUP_MIN {
-        return DEFAULT_FEE_BPS;
-    }
+    if n < WARMUP_MIN { return DEFAULT_FEE_BPS; }
     let sum_sq = rd_f64(storage, 8);
-    if !sum_sq.is_finite() || sum_sq <= 0.0 {
-        return DEFAULT_FEE_BPS;
-    }
+    if !sum_sq.is_finite() || sum_sq <= 0.0 { return DEFAULT_FEE_BPS; }
     let sigma = (sum_sq / n as f64).sqrt();
-    if !sigma.is_finite() || sigma <= 0.0 {
-        return DEFAULT_FEE_BPS;
-    }
-    // Only increase fee at high σ (> 0.5% per step)
+    if !sigma.is_finite() || sigma <= 0.0 { return DEFAULT_FEE_BPS; }
+    // Only ramp fee at high σ (> 0.5% per step)
     let sigma_bps = sigma * 10000.0;
     let fee = if sigma_bps > 50.0 {
         55.0 + (sigma_bps - 50.0) * 3.0
@@ -110,60 +96,43 @@ pub fn compute_swap(data: &[u8]) -> u64 {
         Ok(d) => d,
         Err(_) => return 0,
     };
-
     let input = decoded.input_amount as f64 / NANO;
     let rx = decoded.reserve_x as f64 / NANO;
     let ry = decoded.reserve_y as f64 / NANO;
-    if input <= 0.0 || rx <= 0.0 || ry <= 0.0 {
-        return 0;
-    }
+    if input <= 0.0 || rx <= 0.0 || ry <= 0.0 { return 0; }
 
     let fee_bps = get_fee_bps(&decoded.storage);
     let gamma = (10000.0 - fee_bps) / 10000.0;
-
     let (ri, ro) = match decoded.side {
-        0 => (ry, rx),
-        1 => (rx, ry),
+        0 => (ry, rx), // Buy X: input Y, output X
+        1 => (rx, ry), // Sell X: input X, output Y
         _ => return 0,
     };
 
-    // Exponential curve: same marginal as CP, but more concave
+    // Exponential curve: output = α * ro * (1 - exp(-γ * input / (α * ri)))
+    // Same marginal price as CP at zero input (γ * ro / ri)
+    // More concave for larger inputs → arb extracts less per price deviation
     let u = gamma * input / (ri * ALPHA);
     let output = ALPHA * ro * (1.0 - (-u).exp());
 
-    if output <= 0.0 || !output.is_finite() {
-        return 0;
-    }
+    if output <= 0.0 || !output.is_finite() { return 0; }
     let capped = output.min(ro * 0.999);
     let scaled = (capped * NANO).floor();
-    if scaled <= 0.0 || scaled >= u64::MAX as f64 {
-        return 0;
-    }
-    scaled as u64
+    if scaled <= 0.0 || scaled >= u64::MAX as f64 { 0 } else { scaled as u64 }
 }
 
 pub fn after_swap(data: &[u8], storage: &mut [u8]) {
-    if data.len() < 42 {
-        return;
-    }
-
+    if data.len() < 42 { return; }
     let rx_raw = u64::from_le_bytes([
-        data[18], data[19], data[20], data[21], data[22], data[23], data[24], data[25],
-    ]);
+        data[18], data[19], data[20], data[21], data[22], data[23], data[24], data[25]]);
     let ry_raw = u64::from_le_bytes([
-        data[26], data[27], data[28], data[29], data[30], data[31], data[32], data[33],
-    ]);
+        data[26], data[27], data[28], data[29], data[30], data[31], data[32], data[33]]);
     let step = u64::from_le_bytes([
-        data[34], data[35], data[36], data[37], data[38], data[39], data[40], data[41],
-    ]);
-
-    if rx_raw == 0 || ry_raw == 0 {
-        return;
-    }
+        data[34], data[35], data[36], data[37], data[38], data[39], data[40], data[41]]);
+    if rx_raw == 0 || ry_raw == 0 { return; }
 
     let last_step = rd_u64(storage, 16);
-
-    // Only estimate σ on step transitions (filters out retail-induced noise)
+    // Estimate σ only on step transitions (arb corrections → reflects fair price movement)
     if step > last_step {
         let current_price = ry_raw as f64 / rx_raw as f64;
         let last_price = rd_f64(storage, 0);
@@ -180,7 +149,6 @@ pub fn after_swap(data: &[u8], storage: &mut [u8]) {
         }
         wr_f64(storage, 0, current_price);
     }
-
     wr_u64(storage, 16, step);
     let _ = set_storage(storage);
 }
