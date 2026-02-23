@@ -340,8 +340,8 @@ fn main() -> Result<()> {
     print_results("Top base+vol candidates (stage 1)", &top_stage1);
 
     // Stage 2: Add a tail fee regime for larger trades.
-    let tail_candidates = [0u16, 20, 40, 60, 80, 120, 160];
-    let threshold_candidates = [5u16, 10, 20, 40, 80, 160];
+    let tail_candidates = [0u16, 40, 80, 120, 160, 240, 320, 500, 700];
+    let threshold_candidates = [2u16, 5, 10, 20, 40, 80, 160];
     let mut stage2 = Vec::new();
     for seed in top_stage1.iter().take(4) {
         for tail_fee_bps in tail_candidates {
