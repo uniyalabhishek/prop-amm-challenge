@@ -1,11 +1,15 @@
 use pinocchio::{account_info::AccountInfo, entrypoint, pubkey::Pubkey, ProgramResult};
 use prop_amm_submission_sdk::{set_return_data_bytes, set_return_data_u64, set_storage};
 
-const NAME: &str = "Concave Exp AMM";
+const NAME: &str = "Power Curve AMM";
 const MODEL_USED: &str = "None";
 const STORAGE_SIZE: usize = 1024;
 const NANO: f64 = 1_000_000_000.0;
-const ALPHA: f64 = 0.30;
+
+/// Power curve: output = ro * (1 - (1 + γ*input/(α*ri))^(-α))
+/// Same marginal as CP. More concave for α < 1. Reaches full reserves.
+/// Optimal α ≈ 0.42 balances arb protection vs retail depth.
+const ALPHA: f64 = 0.42;
 const WARMUP: u32 = 10;
 
 // Storage: [0..8] last_price, [8..16] sum_sigma_sq, [16..24] last_step, [24..28] sigma_count
@@ -64,12 +68,12 @@ fn get_fee_bps(storage: &[u8; STORAGE_SIZE]) -> f64 {
     if !sum.is_finite() || sum <= 0.0 { return 55.0; }
     let sigma = (sum / n as f64).sqrt();
     if !sigma.is_finite() || sigma <= 0.0 { return 55.0; }
-    // Step function fee: oracle-calibrated threshold at σ ≈ 0.55% per step
+    // Step function: increase fee sharply for high σ
     let sigma_bps = sigma * 10000.0;
     if sigma_bps > 55.0 {
         150.0
     } else if sigma_bps > 48.0 {
-        55.0 + (sigma_bps - 48.0) * (95.0 / 7.0) // smooth ramp 55→150
+        55.0 + (sigma_bps - 48.0) * (95.0 / 7.0)
     } else {
         55.0
     }
@@ -83,11 +87,17 @@ pub fn compute_swap(data: &[u8]) -> u64 {
     let rx = decoded.reserve_x as f64 / NANO;
     let ry = decoded.reserve_y as f64 / NANO;
     if input <= 0.0 || rx <= 0.0 || ry <= 0.0 { return 0; }
+
     let fee_bps = get_fee_bps(&decoded.storage);
     let gamma = (10000.0 - fee_bps) / 10000.0;
-    let (ri, ro) = match decoded.side { 0 => (ry, rx), 1 => (rx, ry), _ => return 0 };
-    let u = gamma * input / (ri * ALPHA);
-    let output = ALPHA * ro * (1.0 - (-u).exp());
+    let (ri, ro) = match decoded.side {
+        0 => (ry, rx), 1 => (rx, ry), _ => return 0,
+    };
+
+    // Power curve: more concave than CP, approaches full reserves
+    let u = gamma * input / (ALPHA * ri);
+    let output = ro * (1.0 - (1.0 + u).powf(-ALPHA));
+
     if output <= 0.0 || !output.is_finite() { return 0; }
     let scaled = (output.min(ro * 0.999) * NANO).floor();
     if scaled <= 0.0 || scaled >= u64::MAX as f64 { 0 } else { scaled as u64 }
